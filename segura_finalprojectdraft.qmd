@@ -1,0 +1,257 @@
+---
+title: "The Suicide Gender Disparity"
+subtitle: "Final Project for DSCI 140, Fall 2025"
+author: "Nate Segura"
+date: last-modified
+date-format: long
+format: 
+  html:
+      self-contained: true
+toc: true
+number-sections: true
+---
+
+```{r}
+#| message: false
+# Load All Packages
+library(jsonlite)
+library(tidyverse)
+library(knitr)
+library(ggrepel)
+```
+
+# Purpose
+
+This project explores the gender disparity within global suicide rates. On average, male suicide rates are around 3 times as high as female suicide rates. Exploration of this topic may further our understanding of why it exists and how to reduce it.
+
+# Data
+
+The data used in this project stems from [Suicide Rates by Gender](https://ourworldindata.org/grapher/suicide-rate-male-female-who-mdb), a dataset within Our World In Data (OWID). This dataset obtained its information from the World Health Organization (WHO) Mortality Database regarding worldwide suicide rates. An additional dataset was used to categorize each row by `region`. OWID datasets are highly compatible with R and other coding languages as it has a section of code that can be copy-pasted into R in order to use their data.
+
+Column names needed excessive renaming as most columns were longer with varying spaces and special characters. To fix this I simply referred to columns through their number order when initially renaming them. The original unit of analysis was `entity`, which I continued to use throughout most data, except for certain plots such as Plot #2 that changes this unit of analysis into `year`.
+
+Plot 3 includes an additional dataset from OWID: the [Gender Development Index (GDI)](https://ourworldindata.org/grapher/gender-development-index). GDI is a measurement of gender inequality regarding life expectancy, education, and income. This data comes from the UNDP Human Development Report, sourced through varied surveys and databases depending on the country. This dataset was easy to join with my `deaths_2021` data that included suicide rates from the year 2021.
+
+## Data Dictionary
+
+`entity`: country/nation the data regards\
+`year`: year of the data\
+`code`: three letter code referring to the entity\
+`region`: geographical region as defined by Our World in Data\
+`rateboth`: suicide rate per 100k of males and females\
+`ratemale`: male suicide rate per 100k\
+`ratefemale`: female suicide rate per 100k\
+`mfratio`: ratio of male suicide rates over female suicide rates (M:F)\
+`gdi`: value of the gender development index
+
+## Data Processing
+
+```{r}
+# Fetch the data
+deaths <- read.csv("https://ourworldindata.org/grapher/suicide-death-rates-by-sex-who.csv?v=1&csvType=full&useColumnShortNames=true")
+```
+
+```{r}
+# Rename Columns and Create mfratio Column
+deaths <- deaths |> 
+  rename("rateboth" = 4,
+         "ratemale" = 5,
+         "ratefemale" = 6,
+         entity = Entity,
+         code = Code,
+         year = Year) |> 
+  mutate(code = if_else(code == "", "MISSING", code)) |>
+  filter(code != "MISSING") |> 
+  mutate(mfratio = ratemale/ratefemale) |>
+  filter(entity != "Saint Vincent and the Grenadines")
+```
+
+```{r}
+# Filter Year into 2021 (Plot 1 and #)
+deaths_2021 <- deaths |> 
+  filter(year == "2021")
+```
+
+```{r}
+# Add Continent Region (Plot 1 and Tables)
+
+# Fetch Regions Data
+regions <- read.csv("https://ourworldindata.org/grapher/continents-according-to-our-world-in-data.csv?v=1&csvType=full&useColumnShortNames=true")
+
+# Join Data Frames and Rename for Table
+deaths_regions <- regions |> 
+  select(-year) |> 
+  rename(region = owid_region)
+
+deaths_regions <- 
+  left_join(deaths_2021, deaths_regions, by = c("entity" = "Entity", "code" = "Code"))
+
+deaths_regions <- deaths_regions |> 
+  rename("Country" = "entity",
+         "Region" = "region",
+         "Suicide_Ratio" = "mfratio")
+```
+
+```{r}
+# Remove Countries and Condense by Year (Plot 2)
+deaths_over_time <- deaths |> 
+  select(-entity, -code) |> 
+  group_by(year) |> 
+  summarize(rateboth = mean(rateboth),
+            ratemale = mean(ratemale),
+            ratefemale = mean(ratefemale)) |> 
+  pivot_longer(cols = 2:4,
+               names_to = "sex",
+               values_to = "rate") |> 
+  mutate(sex = case_when(sex == "rateboth" ~ "Both Sexes",
+                         sex == "ratemale" ~ "Male" ,
+                         sex == "ratefemale"~ "Female"))
+```
+
+```{r}
+# Join GDI Dataset (Plot 3)
+
+# Fetch the data
+GDI <- read.csv("https://ourworldindata.org/grapher/gender-development-index.csv?v=1&csvType=full&useColumnShortNames=true")
+
+# Join with main dataset
+GDI <- inner_join(GDI, deaths, by = c("Entity" = "entity", 
+                                      "Year" = "year",
+                                      "Code" = "code"))
+
+# Remove NA values, and non-finite values (such as infinity)
+GDI <- GDI |> 
+  select(-owid_region) |> 
+  filter(Entity != "Grenada" & Entity != "Brunei") |> 
+  filter(!is.na(mfratio))
+
+# Condense by Entity for Plotting
+GDI <- GDI |> 
+  group_by(Entity) |> 
+  summarize("gdi" = mean(gdi),
+            "mfratio" = mean(mfratio))
+
+# Add Region for Coloring
+regions <- regions |> 
+  select(-Code, -Year)
+
+GDI <- left_join(GDI, regions, by = "Entity")
+```
+
+# Analysis
+
+## Plot 1
+
+This plot shows contains data from 194 countries in 2021. This plot places each country's female suicide rates against their male suicide rates. The provided dashed line depicts equal male and female rates. Each country is colored based upon its OWID region, clarified in this plot's legend.
+
+This plot is surprising as it places all countries above this 1:1 line, indicating higher suicide rates for men in all 194 countries. The six countries with the highest male suicide rates are labeled with their names. Of these six countries, three are in Africa, two are in South America, and one is in Oceania.
+
+```{r}
+deaths_regions |> 
+  ggplot(aes(ratefemale, ratemale, color = Region)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(linetype = "dashed", alpha = 0.5) +
+  xlim(0,60) +
+  ylim(0,60) +
+  geom_text_repel(aes(label = ifelse(ratemale > 35, Country, "")), 
+                  nudge_x = 4,
+                  nudge_y = 2,
+                  show.legend = FALSE) +
+  labs(x = "Female Suicides (per 100k people)",
+       y = "Male Suicides (per 100k people)",
+       caption = "Dashed line indicates equal rates",
+       title = "Male vs Female Suicide Rates from 194 Countries in 2021",
+       subtitle = "Countries Categorized by Region")
+```
+
+## Plot 2
+
+This graph depicts suicide rates from 2000 to 2021. This graph uses the average global rates for each year. The suicide rate for both sexes is depicted in green, with blue and red lines depicting male and female rates respectively.
+
+This graph demonstrates that this gender disparity has existed for over two decades, persisting regardless of the overall change in suicide rates. This highlights the perseverance of this disparity and raises more questions about its origin.
+
+```{r}
+deaths_over_time |> 
+  ggplot(aes(year, rate, color = sex)) +
+  geom_point() +
+  geom_line() +
+  scale_color_manual(values = c("Male" = "blue",
+                                "Both Sexes" = "green",
+                                "Female" = "red")) +
+  labs(title = "Mean Suicide Rate by Sex from 2000-2021 ",
+       subtitle = "Rates per 100k people, average taken from 194 countries",
+       x = "Year",
+       y = "Suicide Rate (per 100k People)",
+       color = "Sex")
+```
+
+## Tables
+
+### Table 1
+
+This table contains the ten countries with the **highest** ratios of Male:Female suicide rates in 2021. The highest country on this list in Georgia with over nine male suicides per female suicide.
+
+This list is important as almost all of these countries have an alarmingly high ratio of seven to one. Four of these countries are located within Asia, while three are in North America, and the remaining three in different regions. A small trend can be noticed as all of these are smaller countries and often islands.
+
+```{r}
+deaths_regions |> 
+  select(Region, Country, Suicide_Ratio) |> 
+  slice_max(Suicide_Ratio, n = 10) |> 
+  mutate(Suicide_Ratio = round(Suicide_Ratio, 2)) |> 
+  kable(caption = "10 Countries with the Highest Ratios")
+```
+
+### Table 2
+
+My second table contains the ten countries with the **lowest** ratios of Male:Female suicide rates in 2021. In contrast to the previous table, this figure contains larger countries, including the two most populated countries in the world: China and India. There is also a similar trend in countries with again four located within Asia, and two in each of the following: Oceania, Africa, and Europe. No North or South American countries make this list.
+
+```{r}
+deaths_regions |> 
+  select(Region, Country, Suicide_Ratio) |> 
+  slice_min(Suicide_Ratio, n = 10) |> 
+  mutate(Suicide_Ratio = round(Suicide_Ratio, 2)) |> 
+  kable(caption = "10 Countries with the Lowest Ratios")
+```
+
+## Plot 3
+
+Lastly, this plot explores the connection between the gendered suicide ratio and the gender development index (GDI). The GDI uses "1" as a signifier of equality, with values lower than 1 indicating more opportunity for men, and values higher than 1 indicating more opportunity for women. Both GDI values and suicide rates were taken as averages over a twenty-one year span, from 2000-2021. These points are colored by region, and extreme values are labeled.
+
+This plot immediately points towards a trend: the highest differences in suicide rates occur in countries with GDI values close to 1. This trend may suggest that countries dominated by men are less likely to have higher male suicide rates in comparison to their female rates. In addition, a regional trend can be observed. Extreme values of GDI appear to be located in Asia, while extreme values of suicide ratio appear to be located in North America.
+
+```{r}
+#| message: false
+GDI|> 
+  ggplot(aes(gdi, mfratio, color = owid_region)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(aes(gdi, mfratio),
+              color = "azure4",
+              method = lm,
+              se = FALSE,
+              inherit.aes = FALSE) +
+  geom_text(aes(label = ifelse(mfratio > 7, Entity, "")),
+            show.legend = FALSE,
+            hjust = 1,
+            nudge_y = 0.1,
+            nudge_x = -0.01,
+            size = 3) +
+  geom_text(aes(label = ifelse(gdi < 0.75, Entity, "")),
+            show.legend = FALSE,
+            hjust = 1,
+            nudge_y = 0.3, 
+            size = 3) +
+  xlim(0.52,1.05) +
+  labs(title = "Gender Suicide Ratio vs Gender Development Index of 179 Countries",
+       subtitle = "Values Taken as Averages from 2000-2021",
+       x = "Gender Development Index",
+       y = "Gender Sucide Ratio (Male:Female)",
+       color = "Region")
+```
+
+# Reflection
+
+If I had to do this project over again I think I would like to explore more datasets and their correlations to gender disparity. Throughout my work on this project I evaluated multiple datasets not included in the final analysis, including the Women's Empowerment Index, Gender Inequality Index, Military Spending, and Labor Force Participation. All of these datasets did not have meaningful visual patterns or relation to the primary disparity this project aimed to explore.
+
+If I were to have more time I would have liked to explore more datasets that targeted the top 10 and bottom 10 countries as depicted in my tables. I think looking for commonalities among these tables may have produced better results for further analysis. In addition, I aimed to look into firearm distribution but failed to find a proper dataset.
+
+This project was limited by available datasets and analytical techniques. Further proper evaluation is necessary to understand these patterns in-depth.
